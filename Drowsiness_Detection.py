@@ -1,323 +1,370 @@
+import cv2
+import csv
+import logging
+import os
+import smtplib
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from email.message import EmailMessage
 from scipy.spatial import distance
+from threading import Thread, Lock
+from typing import Tuple, Optional
 import imutils
+import numpy as np
+import winsound
 from mediapipe.tasks.python import vision
 from mediapipe.tasks.python import core as mp_core
 from mediapipe.tasks.python.vision.core import image as mp_image
 from mediapipe.tasks.python.vision.core import vision_task_running_mode as mp_running_mode
-import cv2
-import numpy as np
-import winsound
-from threading import Thread
-import time
-import smtplib
-from email.message import EmailMessage
-import os
-import csv
 
-# ==========================================
-# SMS & EMAIL NOTIFICATION CONFIGURATION
-# ==========================================
-# To activate: Replace the strings below with your actual data.
-SENDER_EMAIL = "mohansanjai1716@gmail.com"
-SENDER_PASSWORD = "ynsnafpxrckfoybj"  # MUST be a Google App Password (no spaces)
-RECEIVER_EMAIL = "mohansanjai1716@gmail.com" 
-# Note: SMS gateways (like @vtext) are mostly for US carriers. If you are outside the US, this text may not deliver, but the Email will arrive instantly!
-RECEIVER_SMS = "9514210203@vtext.com" 
-# ==========================================
-
-ALARM_ON = False
-LAST_EMAIL_TIME = 0
-last_screenshot_time = 0
-
-# --- Logging Initialization ---
-for folder in ["DROWSINESS", "YAWNING", "DISTRACTED"]:
-	os.makedirs(f"alerts/{folder}", exist_ok=True)
-
-csv_filename = "alerts_log.csv"
-if not os.path.isfile(csv_filename):
-	with open(csv_filename, mode='w', newline='') as file:
-		writer = csv.writer(file)
-		writer.writerow(["Timestamp", "Alert_Type", "Image_File"])
-# ------------------------------
-
-def send_email_notification(alert_type):
-	global LAST_EMAIL_TIME
-	
-	# Safety check so it doesn't crash if you haven't entered your email
-	if SENDER_EMAIL == "your_email@gmail.com" or SENDER_PASSWORD == "your_16_digit_app_password":
-		print(f"\n[ALERT] {alert_type} detected! (Live transmission disabled - Please configure credentials at the top of the script)")
-		return
-
-	# Rate limit: Only send 1 email every 60 seconds
-	if time.time() - LAST_EMAIL_TIME < 60:
-		return
-	LAST_EMAIL_TIME = time.time()
-	
-	try:
-		print(f"\n[ALERT] Transmitting live {alert_type} notification email and SMS...")
-		
-		# Connect to Google's secured SMTP server
-		server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-		server.login(SENDER_EMAIL, SENDER_PASSWORD)
-		
-		targets = [RECEIVER_EMAIL, RECEIVER_SMS]
-		for target in targets:
-			if "@" in target and "1234567890" not in target and "example.com" not in target:
-				msg = EmailMessage()
-				msg.set_content(f"URGENT: The driver monitoring system has triggered a {alert_type} alert at {time.ctime()}!")
-				msg['Subject'] = f'Driver Alert: {alert_type} Detected'
-				msg['From'] = SENDER_EMAIL
-				msg['To'] = target
-				server.send_message(msg)
-				print(f" -> Sent to {target}")
-				
-		server.quit()
-		print("[ALERT] Live Notifications successfully transmitted.")
-	except Exception as e:
-		print(f"[ERROR] Failed to send live notification. Check your App Password! Error: {e}")
-
-def sleep_while_active(duration):
-	start_sleep = time.time()
-	while ALARM_ON and (time.time() - start_sleep) < duration:
-		time.sleep(0.05)
-
-def sound_alarm():
-	global ALARM_ON
-	alarm_start = time.time()
-	continuous_playing = False
-	
-	while ALARM_ON:
-		elapsed = time.time() - alarm_start
-		if elapsed < 3.0:
-			# Level 1: Initial alert (Lower pitch, spaced out)
-			winsound.Beep(1000, 300)
-			sleep_while_active(0.7)
-		elif elapsed < 6.0:
-			# Level 2: Rising urgency (Medium pitch, faster)
-			winsound.Beep(1500, 300)
-			sleep_while_active(0.3)
-		else:
-			# Level 3: Critical Continuous Alarm
-			if not continuous_playing:
-				# Uses built-in Windows critical sound, continuously looped asynchronously
-				winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_LOOP | winsound.SND_ASYNC)
-				continuous_playing = True
-			sleep_while_active(0.5)
-
-	# Clean up to stop the looping sound instantly when awake
-	if continuous_playing:
-		winsound.PlaySound(None, winsound.SND_PURGE)
-
-def eye_aspect_ratio(eye):
-	A = distance.euclidean(eye[1], eye[5])
-	B = distance.euclidean(eye[2], eye[4])
-	C = distance.euclidean(eye[0], eye[3])
-	ear = (A + B) / (2.0 * C)
-	return ear
-
-def mouth_aspect_ratio(mouth):
-	# mouth[0]=top inner, mouth[1]=bottom inner, mouth[2]=left inner, mouth[3]=right inner
-	A = distance.euclidean(mouth[0], mouth[1])
-	B = distance.euclidean(mouth[2], mouth[3])
-	mar = A / B
-	return mar
-
-thresh = 0.25
-frame_check = 20
-mar_thresh = 0.6
-yawn_frame_check = 10
-distract_frame_check = 20
-
-model_path = "D:/project/lung/Drowsiness_Detection/face_landmarker.task"
-base_options = mp_core.base_options.BaseOptions(model_asset_path=model_path)
-options = vision.FaceLandmarkerOptions(
-    base_options=base_options,
-    running_mode=mp_running_mode.VisionTaskRunningMode.VIDEO,
-    num_faces=1,
-    min_face_detection_confidence=0.5,
-    min_face_presence_confidence=0.5,
-    min_tracking_confidence=0.5,
+# Set up logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-face_mesh = vision.FaceLandmarker.create_from_options(options)
+logger = logging.getLogger(__name__)
 
-import time
+@dataclass
+class MonitorConfig:
+    """Configuration data class containing system parameters and thresholds."""
+    # Detection Thresholds
+    ear_threshold: float = 0.25
+    mar_threshold: float = 0.6
+    drowsy_frame_check: int = 20
+    yawn_frame_check: int = 10
+    distracted_frame_check: int = 20
+    gaze_threshold_low: float = 0.42
+    gaze_threshold_high: float = 0.58
+    
+    # Notification & Accounts (Environment variables should be used in production)
+    sender_email: str = os.getenv("SENDER_EMAIL", "mohansanjai1716@gmail.com")
+    sender_password: str = os.getenv("SENDER_PASSWORD", "ynsnafpxrckfoybj")
+    receiver_email: str = os.getenv("RECEIVER_EMAIL", "mohansanjai1716@gmail.com")
+    receiver_sms: str = os.getenv("RECEIVER_SMS", "9514210203@vtext.com")
+    email_rate_limit_secs: int = 60
+    
+    # Paths & Files
+    model_path: str = "D:/project/lung/Drowsiness_Detection/face_landmarker.task"
+    log_csv: str = "alerts_log.csv"
+    alerts_dir: str = "alerts"
 
-cap = cv2.VideoCapture(0)
-flag = 0
-yawn_flag = 0
-distract_flag = 0
-alarm_cooldown = 0
-frame_timestamp_ms = 0
 
-while True:
-	ret, frame = cap.read()
-	if not ret:
-		break
-	frame = imutils.resize(frame, width=450)
-	rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-	mp_frame = mp_image.Image(mp_image.ImageFormat.SRGB, rgb)
-	frame_timestamp_ms = int(time.time() * 1000)
-	result = face_mesh.detect_for_video(mp_frame, frame_timestamp_ms)
-	if result.face_landmarks:
-		for landmarks in result.face_landmarks:
-			h, w, _ = frame.shape
-			# Correct Mediapipe landmarks for EAR (0: outer, 1: top, 2: top, 3: inner, 4: bottom, 5: bottom)
-			left_eye_points = [33, 160, 158, 133, 153, 144]
-			right_eye_points = [362, 385, 387, 263, 373, 380]
-			leftEye = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in left_eye_points], dtype=np.int32)
-			rightEye = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in right_eye_points], dtype=np.int32)
-			leftEAR = eye_aspect_ratio(leftEye)
-			rightEAR = eye_aspect_ratio(rightEye)
-			ear = (leftEAR + rightEAR) / 2.0
-			cv2.polylines(frame, [leftEye], True, (0, 255, 0), 1)
-			cv2.polylines(frame, [rightEye], True, (0, 255, 0), 1)
-			
-			# MAR calculation
-			mouth_points = [13, 14, 78, 308]
-			mouth = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in mouth_points], dtype=np.int32)
-			mar = mouth_aspect_ratio(mouth)
-			cv2.polylines(frame, [mouth], True, (0, 255, 255), 1)
-			
-			# Head Pose Estimation via solvePnP
-			face_2d = []
-			for idx in [1, 33, 263, 61, 291, 152]:
-				lm = landmarks[idx]
-				x, y = int(lm.x * w), int(lm.y * h)
-				face_2d.append([x, y])
-			
-			face_2d = np.array(face_2d, dtype=np.float64)
-			
-			# Generic 3D model points in World Coordinates
-			face_3d = np.array([
-				[0.0, 0.0, 0.0],            # 1: Nose tip
-				[-165.0, -170.0, -135.0],   # 33: Left eye outer corner
-				[165.0, -170.0, -135.0],    # 263: Right eye outer corner
-				[-150.0, 150.0, -125.0],    # 61: Left Mouth corner
-				[150.0, 150.0, -125.0],     # 291: Right mouth corner
-				[0.0, 330.0, -65.0]         # 152: Chin
-			], dtype=np.float64)
-			
-			focal_length = 1 * w
-			camera_matrix = np.array([[focal_length, 0, w/2],
-									  [0, focal_length, h/2],
-									  [0, 0, 1]], dtype=np.float64)
-			distortion_matrix = np.zeros((4, 1), dtype=np.float64)
-			
-			success, rot_vec, trans_vec = cv2.solvePnP(face_3d, face_2d, camera_matrix, distortion_matrix)
-			rmat, jac = cv2.Rodrigues(rot_vec)
-			angles, mtxR, mtxQ, Qx, Qy, Qz = cv2.RQDecomp3x3(rmat)
-			
-			pitch = angles[0]
-			yaw = angles[1]
-			
-			# Gaze Tracking (Iris vs Eye Corners)
-			gaze_distracted = False
-			avg_gaze = 0.5
-			if len(landmarks) >= 478:
-				p_left_l  = np.array([landmarks[33].x * w, landmarks[33].y * h])
-				p_right_l = np.array([landmarks[133].x * w, landmarks[133].y * h])
-				p_iris_l  = np.array([landmarks[468].x * w, landmarks[468].y * h])
-				
-				p_left_r  = np.array([landmarks[362].x * w, landmarks[362].y * h])
-				p_right_r = np.array([landmarks[263].x * w, landmarks[263].y * h])
-				p_iris_r  = np.array([landmarks[473].x * w, landmarks[473].y * h])
+class FaceAnalyzer:
+    """Stateless utility class for all facial metric calculations."""
+    
+    @staticmethod
+    def calculate_ear(eye_landmarks: np.ndarray) -> float:
+        """Calculates Eye Aspect Ratio (EAR)."""
+        a = distance.euclidean(eye_landmarks[1], eye_landmarks[5])
+        b = distance.euclidean(eye_landmarks[2], eye_landmarks[4])
+        c = distance.euclidean(eye_landmarks[0], eye_landmarks[3])
+        return (a + b) / (2.0 * c)
 
-				w_l, d_l = distance.euclidean(p_left_l, p_right_l), distance.euclidean(p_left_l, p_iris_l)
-				r_l = d_l / w_l if w_l > 0 else 0.5
-				
-				w_r, d_r = distance.euclidean(p_left_r, p_right_r), distance.euclidean(p_left_r, p_iris_r)
-				r_r = d_r / w_r if w_r > 0 else 0.5
-				
-				avg_gaze = (r_l + r_r) / 2.0
-				if avg_gaze < 0.42 or avg_gaze > 0.58:
-					gaze_distracted = True
+    @staticmethod
+    def calculate_mar(mouth_landmarks: np.ndarray) -> float:
+        """Calculates Mouth Aspect Ratio (MAR)."""
+        a = distance.euclidean(mouth_landmarks[0], mouth_landmarks[1])
+        b = distance.euclidean(mouth_landmarks[2], mouth_landmarks[3])
+        return a / b if b != 0 else 0
 
-			cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-			cv2.putText(frame, f"MAR: {mar:.2f}", (300, 60),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-			cv2.putText(frame, f"PITCH: {pitch:.1f} YAW: {yaw:.1f} GAZE: {avg_gaze:.2f}", (10, h - 20),
-				cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-				
-			drowsy = False
-			yawning = False
-			distracted = False
+    @staticmethod
+    def calculate_head_pose(landmarks, w: int, h: int) -> Tuple[float, float]:
+        """Calculates Head Pitch and Yaw using OpenCV solvePnP."""
+        face_2d = np.array([
+            [int(landmarks[idx].x * w), int(landmarks[idx].y * h)] 
+            for idx in [1, 33, 263, 61, 291, 152]
+        ], dtype=np.float64)
+        
+        # Generic 3D model points in World Coordinates
+        face_3d = np.array([
+            [0.0, 0.0, 0.0],            # Nose tip
+            [-165.0, -170.0, -135.0],   # Left eye outer corner
+            [165.0, -170.0, -135.0],    # Right eye outer corner
+            [-150.0, 150.0, -125.0],    # Left mouth corner
+            [150.0, 150.0, -125.0],     # Right mouth corner
+            [0.0, 330.0, -65.0]         # Chin
+        ], dtype=np.float64)
+        
+        focal_length = 1 * w
+        camera_mat = np.array([[focal_length, 0, w/2], [0, focal_length, h/2], [0, 0, 1]], dtype=np.float64)
+        dist_coef = np.zeros((4, 1), dtype=np.float64)
+        
+        _, rot_vec, _ = cv2.solvePnP(face_3d, face_2d, camera_mat, dist_coef)
+        rmat, _ = cv2.Rodrigues(rot_vec)
+        angles, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
+        
+        return angles[0], angles[1]  # pitch, yaw
 
-			# Distracted thresholds: extreme head yaw/pitch, or eyes looking fully away
-			if yaw < -12 or yaw > 12 or pitch < -20 or gaze_distracted:
-				distract_flag += 1
-				if distract_flag >= distract_frame_check:
-					distracted = True
-			else:
-				distract_flag = 0
+    @staticmethod
+    def calculate_gaze_ratio(landmarks, w: int, h: int) -> float:
+        """Calculates average gaze ratio based on iris position."""
+        if len(landmarks) < 478:
+            return 0.5
+            
+        def _iris_ratio(left_idx, right_idx, iris_idx):
+            p_left = np.array([landmarks[left_idx].x * w, landmarks[left_idx].y * h])
+            p_right = np.array([landmarks[right_idx].x * w, landmarks[right_idx].y * h])
+            p_iris = np.array([landmarks[iris_idx].x * w, landmarks[iris_idx].y * h])
+            width = distance.euclidean(p_left, p_right)
+            dist = distance.euclidean(p_left, p_iris)
+            return dist / width if width > 0 else 0.5
 
-			if ear < thresh:
-				flag += 1
-				if flag >= frame_check:
-					drowsy = True
-			else:
-				flag = 0
+        left_ratio = _iris_ratio(33, 133, 468)
+        right_ratio = _iris_ratio(362, 263, 473)
+        return (left_ratio + right_ratio) / 2.0
 
-			if mar > mar_thresh:
-				yawn_flag += 1
-				if yawn_flag >= yawn_frame_check:
-					yawning = True
-			else:
-				yawn_flag = 0
 
-			if drowsy:
-				cv2.putText(frame, "****************DROWSY ALERT!****************", (10, 30),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-				cv2.putText(frame, "****************DROWSY ALERT!****************", (10, 325),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-			
-			if yawning:
-				cv2.putText(frame, "****************YAWN ALERT!****************", (10, 80),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+class AlertManager:
+    """Handles audio, email notifications, and local file logging sequentially and asynchronously."""
+    def __init__(self, config: MonitorConfig):
+        self.config = config
+        self.alarm_active = False
+        self.last_email_ts = 0.0
+        self.last_screenshot_ts = 0.0
+        self.state_lock = Lock()
+        
+        self._initialize_storage()
 
-			if distracted:
-				cv2.putText(frame, "**************DISTRACTED ALERT!**************", (10, 130),
-					cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+    def _initialize_storage(self):
+        """Prepares necessary directories and CSV file."""
+        for folder in ["DROWSINESS", "YAWNING", "DISTRACTED"]:
+            os.makedirs(os.path.join(self.config.alerts_dir, folder), exist_ok=True)
 
-			if drowsy or yawning or distracted:
-				alarm_cooldown = 20  # Provide ~1 second buffer to smooth out camera jitters
-				
-				if drowsy: alert_reason = "DROWSINESS"
-				elif yawning: alert_reason = "YAWNING"
-				else: alert_reason = "DISTRACTED"
+        if not os.path.isfile(self.config.log_csv):
+            try:
+                with open(self.config.log_csv, mode='w', newline='') as f:
+                    csv.writer(f).writerow(["Timestamp", "Alert_Type", "Image_File"])
+            except Exception as e:
+                logger.error(f"Failed to initialize CSV log: {e}")
 
-				# Take a screenshot and log it every 1 second continuously during the event!
-				if time.time() - last_screenshot_time >= 1.0:
-					last_screenshot_time = time.time()
-					timestamp_str = time.strftime("%Y%m%d-%H%M%S")
-					# Store in nicely organized separate subfolders!
-					img_filename = f"alerts/{alert_reason}/{alert_reason}_{timestamp_str}.jpg"
-					cv2.imwrite(img_filename, frame)
-					
-					# Append to CSV log safely
-					try:
-						with open(csv_filename, mode='a', newline='') as file:
-							writer = csv.writer(file)
-							writer.writerow([time.ctime(), alert_reason, img_filename])
-					except PermissionError:
-						print(f"[WARNING] Could not update {csv_filename} (File is currently locked or open).")
+    def log_incident(self, alert_type: str, frame: np.ndarray):
+        """Saves physical proof of the alert and updates the CSV registry."""
+        current_time = time.time()
+        with self.state_lock:
+            if current_time - self.last_screenshot_ts < 1.0:
+                return
+            self.last_screenshot_ts = current_time
 
-				if not ALARM_ON:
-					# Fire email/SMS safely asynchronously (already rate-limited to 60s natively)
-					Thread(target=send_email_notification, args=(alert_reason,), daemon=True).start()
-					
-					# Start the escalating audio siren thread
-					ALARM_ON = True
-					Thread(target=sound_alarm, daemon=True).start()
-			else:
-				alarm_cooldown -= 1
-				if alarm_cooldown <= 0:
-					ALARM_ON = False
-	cv2.imshow("Frame", frame)
-	key = cv2.waitKey(1) & 0xFF
-	if key == ord("q"):
-		break
+        timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+        img_path = os.path.join(self.config.alerts_dir, alert_type, f"{alert_type}_{timestamp_str}.jpg")
+        cv2.imwrite(img_path, frame)
 
-face_mesh.close()
-cv2.destroyAllWindows()
-cap.release() 
+        try:
+            with open(self.config.log_csv, mode='a', newline='') as f:
+                csv.writer(f).writerow([time.ctime(), alert_type, img_path])
+        except PermissionError:
+            logger.warning(f"Unable to update {self.config.log_csv} (File may be in use).")
+
+    def dispatch_notification_async(self, alert_type: str):
+        """Asynchronously dispatches SMS/Email notifications adhering to rate limits."""
+        current_time = time.time()
+        with self.state_lock:
+            if current_time - self.last_email_ts < self.config.email_rate_limit_secs:
+                return
+            self.last_email_ts = current_time
+
+        def _send_payload():
+            try:
+                logger.info(f"Transmitting remote {alert_type} notification...")
+                server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+                server.login(self.config.sender_email, self.config.sender_password)
+                
+                targets = [self.config.receiver_email, self.config.receiver_sms]
+                for target in targets:
+                    if "@" in target and "1234567890" not in target:
+                        msg = EmailMessage()
+                        msg.set_content(f"URGENT: System triggered a {alert_type} alert at {time.ctime()}!")
+                        msg['Subject'] = f'Driver Alert: {alert_type} Detected'
+                        msg['From'] = self.config.sender_email
+                        msg['To'] = target
+                        server.send_message(msg)
+                
+                server.quit()
+                logger.info("Remote payload delivered successfully.")
+            except Exception as e:
+                logger.error(f"Notification dispatch failed: {e}")
+
+        Thread(target=_send_payload, daemon=True).start()
+
+    def _sleep_while_alarm(self, duration: float):
+        start = time.time()
+        while self.alarm_active and (time.time() - start) < duration:
+            time.sleep(0.05)
+
+    def engage_audio_alarm(self):
+        """Engages an escalating asynchronous audio warning."""
+        with self.state_lock:
+            if self.alarm_active:
+                return
+            self.alarm_active = True
+
+        def _sound_sequence():
+            start_time = time.time()
+            critical_loop_active = False
+            
+            while self.alarm_active:
+                elapsed = time.time() - start_time
+                if elapsed < 3.0:
+                    winsound.Beep(1000, 300)
+                    self._sleep_while_alarm(0.7)
+                elif elapsed < 6.0:
+                    winsound.Beep(1500, 300)
+                    self._sleep_while_alarm(0.3)
+                else:
+                    if not critical_loop_active:
+                        winsound.PlaySound("SystemHand", winsound.SND_ALIAS | winsound.SND_LOOP | winsound.SND_ASYNC)
+                        critical_loop_active = True
+                    self._sleep_while_alarm(0.5)
+
+            if critical_loop_active:
+                winsound.PlaySound(None, winsound.SND_PURGE)
+
+        Thread(target=_sound_sequence, daemon=True).start()
+
+    def disengage_audio_alarm(self):
+        """Disables the audio warning system safely."""
+        with self.state_lock:
+            self.alarm_active = False
+
+
+class DriverSafetySystem:
+    """Core controller tying MediaPipe inference, Analysis, and Alerts together."""
+    def __init__(self, config: MonitorConfig):
+        self.config = config
+        self.alert_manager = AlertManager(config)
+        self.face_mesh = self._init_mediapipe_model()
+        
+        # Action Context Identifiers
+        self.metrics = {"drowsy_frames": 0, "yawn_frames": 0, "distract_frames": 0}
+        self.alarm_cooldown = 0
+
+    def _init_mediapipe_model(self) -> vision.FaceLandmarker:
+        try:
+            base_opts = mp_core.base_options.BaseOptions(model_asset_path=self.config.model_path)
+            opts = vision.FaceLandmarkerOptions(
+                base_options=base_opts,
+                running_mode=mp_running_mode.VisionTaskRunningMode.VIDEO,
+                num_faces=1,
+                min_face_detection_confidence=0.5,
+                min_face_presence_confidence=0.5,
+                min_tracking_confidence=0.5,
+            )
+            return vision.FaceLandmarker.create_from_options(opts)
+        except Exception as e:
+            logger.critical(f"MediaPipe initialization failure: {e}")
+            raise
+
+    def process_frame_state(self, frame: np.ndarray) -> np.ndarray:
+        """Processes driver landmarks against thresholds and updates UI overlay."""
+        frame = imutils.resize(frame, width=450)
+        h, w, _ = frame.shape
+        mp_frame = mp_image.Image(mp_image.ImageFormat.SRGB, cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        
+        result = self.face_mesh.detect_for_video(mp_frame, int(time.time() * 1000))
+        if not result.face_landmarks:
+            return frame
+
+        landmarks = result.face_landmarks[0]
+        
+        # Extraction & Mathematics
+        left_eye = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in [33, 160, 158, 133, 153, 144]])
+        right_eye = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in [362, 385, 387, 263, 373, 380]])
+        mouth = np.array([(int(landmarks[p].x * w), int(landmarks[p].y * h)) for p in [13, 14, 78, 308]])
+
+        ear = (FaceAnalyzer.calculate_ear(left_eye) + FaceAnalyzer.calculate_ear(right_eye)) / 2.0
+        mar = FaceAnalyzer.calculate_mar(mouth)
+        pitch, yaw = FaceAnalyzer.calculate_head_pose(landmarks, w, h)
+        gaze = FaceAnalyzer.calculate_gaze_ratio(landmarks, w, h)
+
+        # Plot Overlays
+        cv2.polylines(frame, [left_eye, right_eye], True, (0, 255, 0), 1)
+        cv2.polylines(frame, [mouth], True, (0, 255, 255), 1)
+        
+        cv2.putText(frame, f"EAR: {ear:.2f}", (300, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(frame, f"MAR: {mar:.2f}", (300, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+        cv2.putText(frame, f"P: {pitch:.1f} Y: {yaw:.1f} G: {gaze:.2f}", (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+        self._evaluate_thresholds(frame, ear, mar, pitch, yaw, gaze)
+        return frame
+
+    def _evaluate_thresholds(self, frame, ear, mar, pitch, yaw, gaze):
+        """Cross-checks live frame metrics against limits to issue warnings."""
+        flags = {"is_drowsy": False, "is_yawning": False, "is_distracted": False}
+        
+        # Processing Triggers
+        if yaw < -12 or yaw > 12 or pitch < -20 or gaze < self.config.gaze_threshold_low or gaze > self.config.gaze_threshold_high:
+            self.metrics["distract_frames"] += 1
+            if self.metrics["distract_frames"] >= self.config.distracted_frame_check:
+                flags["is_distracted"] = True
+        else:
+            self.metrics["distract_frames"] = 0
+
+        if ear < self.config.ear_threshold:
+            self.metrics["drowsy_frames"] += 1
+            if self.metrics["drowsy_frames"] >= self.config.drowsy_frame_check:
+                flags["is_drowsy"] = True
+        else:
+            self.metrics["drowsy_frames"] = 0
+
+        if mar > self.config.mar_threshold:
+            self.metrics["yawn_frames"] += 1
+            if self.metrics["yawn_frames"] >= self.config.yawn_frame_check:
+                flags["is_yawning"] = True
+        else:
+            self.metrics["yawn_frames"] = 0
+
+        # Rendering & Execution
+        if flags["is_drowsy"]: cv2.putText(frame, "*** DROWSY ALERT! ***", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        if flags["is_yawning"]: cv2.putText(frame, "*** YAWN ALERT! ***", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
+        if flags["is_distracted"]: cv2.putText(frame, "*** DISTRACTED ALERT! ***", (10, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+
+        if any(flags.values()):
+            self.alarm_cooldown = 20
+            reason = "DROWSINESS" if flags["is_drowsy"] else "YAWNING" if flags["is_yawning"] else "DISTRACTED"
+            
+            self.alert_manager.log_incident(reason, frame)
+            self.alert_manager.dispatch_notification_async(reason)
+            self.alert_manager.engage_audio_alarm()
+        else:
+            self.alarm_cooldown -= 1
+            if self.alarm_cooldown <= 0:
+                self.alert_manager.disengage_audio_alarm()
+
+    def run_pipeline(self):
+        """Main lifecycle block for driving the pipeline loops."""
+        logger.info("Engaging Primary Camera Feed...")
+        cap = cv2.VideoCapture(0)
+        
+        if not cap.isOpened():
+            logger.error("Camera interface unready/unavailable.")
+            return
+
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                output = self.process_frame_state(frame)
+                
+                cv2.imshow("System Interface", output)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.info("Standard shutdown received via local UI interaction.")
+                    break
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
+            self.face_mesh.close()
+
+
+def main():
+    config = MonitorConfig()
+    try:
+        system = DriverSafetySystem(config)
+        system.run_pipeline()
+    except Exception as e:
+        logger.critical(f"Critical execution error: {e}")
+
+if __name__ == "__main__":
+    main()
