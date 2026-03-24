@@ -1,6 +1,7 @@
 import csv
 import logging
 import os
+import queue
 import smtplib
 import time
 import winsound
@@ -10,16 +11,79 @@ from threading import Thread, Lock
 
 import cv2
 import numpy as np
+import pyttsx3
 
 from config import MonitorConfig
 
 logger = logging.getLogger(__name__)
 
 
+class VoiceSpeaker:
+    """
+    Dedicated background thread that owns the pyttsx3 engine.
+    pyttsx3 must be used from the thread that created it,
+    so we queue messages and process them on a single worker thread.
+    """
+
+    # Voice messages per alert type
+    MESSAGES = {
+        "DROWSINESS": [
+            "Warning. Drowsiness detected. Please stay alert.",
+            "Alert. You appear to be falling asleep. Pull over safely.",
+            "Critical warning. Driver is drowsy. Stop the vehicle now.",
+        ],
+        "YAWNING": [
+            "You have yawned. Consider taking a break.",
+            "Fatigue detected. Please rest soon.",
+        ],
+        "DISTRACTED": [
+            "Warning. Eyes off road. Please focus on driving.",
+            "Distraction detected. Keep your eyes on the road.",
+        ],
+    }
+
+    def __init__(self):
+        self._queue = queue.Queue()
+        self._counts = {k: 0 for k in self.MESSAGES}
+        self._thread = Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def speak(self, alert_type: str):
+        """Queue a spoken message for the given alert type."""
+        self._queue.put(alert_type)
+
+    def _run(self):
+        """Worker — owns the TTS engine and blocks on each utterance."""
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty("rate", 160)    # words per minute
+            engine.setProperty("volume", 1.0)  # 0.0–1.0
+            # Prefer a female voice if available
+            voices = engine.getProperty("voices")
+            for v in voices:
+                if "female" in v.name.lower() or "zira" in v.name.lower():
+                    engine.setProperty("voice", v.id)
+                    break
+
+            while True:
+                alert_type = self._queue.get()      # blocks until a message arrives
+                messages = self.MESSAGES.get(alert_type, [f"{alert_type} alert."])
+                idx = self._counts.get(alert_type, 0)
+                text = messages[min(idx, len(messages) - 1)]
+                self._counts[alert_type] = idx + 1
+
+                engine.say(text)
+                engine.runAndWait()
+                self._queue.task_done()
+        except Exception as e:
+            logger.error(f"VoiceSpeaker thread crashed: {e}")
+
+
 class AlertManager:
     """
     Manages all system alerts and side-effects:
       - Escalating audio alarm (3-level siren)
+      - Voice TTS spoken alerts (pyttsx3, rate-limited)
       - Screenshot capture & organized file storage
       - CSV incident logging
       - Async email & SMS notifications (rate-limited)
@@ -30,7 +94,9 @@ class AlertManager:
         self.alarm_active = False
         self.last_email_ts = 0.0
         self.last_screenshot_ts = 0.0
+        self.last_voice_ts = 0.0
         self._lock = Lock()
+        self._speaker = VoiceSpeaker()
         self._initialize_storage()
 
     # ------------------------------------------------------------------ #
@@ -80,6 +146,18 @@ class AlertManager:
     # ------------------------------------------------------------------ #
     #  Remote Notifications
     # ------------------------------------------------------------------ #
+
+    def speak_alert(self, alert_type: str):
+        """
+        Dispatches a spoken TTS voice alert.
+        Rate-limited independently from email — fires at most once every 8 seconds.
+        """
+        current_time = time.time()
+        with self._lock:
+            if current_time - self.last_voice_ts < 8.0:
+                return
+            self.last_voice_ts = current_time
+        self._speaker.speak(alert_type)
 
     def dispatch_notification_async(self, alert_type: str):
         """

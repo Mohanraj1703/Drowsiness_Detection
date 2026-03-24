@@ -202,6 +202,7 @@ class DriverSafetySystem:
 
             self.alert_manager.log_incident(reason, frame)
             self.alert_manager.dispatch_notification_async(reason)
+            self.alert_manager.speak_alert(reason)
             self.alert_manager.engage_audio_alarm()
         else:
             self._alarm_cooldown -= 1
