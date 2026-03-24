@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Optional, TYPE_CHECKING
 
 import cv2
 import imutils
@@ -12,6 +13,9 @@ from mediapipe.tasks.python.vision.core import vision_task_running_mode as mp_ru
 from config import MonitorConfig
 from face_analyzer import FaceAnalyzer
 from alert_manager import AlertManager
+
+if TYPE_CHECKING:
+    from web_server import SharedState
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +30,9 @@ class DriverSafetySystem:
     Runs a real-time pipeline loop reading frames from the webcam.
     """
 
-    def __init__(self, config: MonitorConfig):
+    def __init__(self, config: MonitorConfig, shared_state: Optional["SharedState"] = None):
         self.config = config
+        self.shared_state = shared_state
         self.alert_manager = AlertManager(config)
         self.face_mesh = self._init_mediapipe_model()
 
@@ -81,11 +86,17 @@ class DriverSafetySystem:
                     break
 
                 output_frame = self._process_frame(frame)
-                cv2.imshow("Driver Safety System", output_frame)
 
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    logger.info("Shutdown signal received. Closing system.")
-                    break
+                # Only show local window if NOT running in web-server mode
+                if self.shared_state is None:
+                    cv2.imshow("Driver Safety System", output_frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        logger.info("Shutdown signal received. Closing system.")
+                        break
+                else:
+                    # In web mode: check for 'q' without blocking
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
         finally:
             cap.release()
             cv2.destroyAllWindows()
@@ -147,6 +158,18 @@ class DriverSafetySystem:
 
         # Evaluate all thresholds and trigger alerts
         self._evaluate_and_alert(frame, ear, mar, pitch, yaw, gaze)
+
+        # Push frame + raw metrics to web dashboard if active
+        if self.shared_state:
+            self.shared_state.update_frame(frame)
+            # Write raw sensor values (alert flags updated separately in _evaluate_and_alert)
+            with self.shared_state.lock:
+                self.shared_state.ear = ear
+                self.shared_state.mar = mar
+                self.shared_state.pitch = pitch
+                self.shared_state.yaw = yaw
+                self.shared_state.gaze = gaze
+
         return frame
 
     def _evaluate_and_alert(self, frame, ear, mar, pitch, yaw, gaze):
@@ -204,7 +227,19 @@ class DriverSafetySystem:
             self.alert_manager.dispatch_notification_async(reason)
             self.alert_manager.speak_alert(reason)
             self.alert_manager.engage_audio_alarm()
+
+            if self.shared_state:
+                self.shared_state.record_alert(reason)
         else:
             self._alarm_cooldown -= 1
             if self._alarm_cooldown <= 0:
                 self.alert_manager.disengage_audio_alarm()
+
+        # Always sync alert flags to shared state
+        if self.shared_state:
+            self.shared_state.update_metrics(
+                self.shared_state.ear, self.shared_state.mar,
+                self.shared_state.pitch, self.shared_state.yaw,
+                self.shared_state.gaze,
+                is_drowsy, is_yawning, is_distracted
+            )

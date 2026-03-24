@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="description" content="Driver Safety System — real-time drowsiness and distraction monitoring dashboard" />
+  <title>Driver Safety System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- ── TOP NAV ── -->
+  <header class="navbar">
+    <div class="nav-brand">
+      <span class="nav-icon">🛡️</span>
+      <span class="nav-title">Driver Safety</span>
+    </div>
+    <div class="nav-meta">
+      <span id="session-timer" class="session-timer">00:00:00</span>
+      <span id="status-dot" class="status-dot safe"></span>
+    </div>
+  </header>
+
+  <!-- ── STATUS BANNER ── -->
+  <div id="status-banner" class="status-banner safe">
+    <span id="status-icon" class="banner-icon">✅</span>
+    <span id="status-text" class="banner-text">Driver Alert &amp; Safe</span>
+  </div>
+
+  <!-- ── LIVE FEED ── -->
+  <section class="feed-section">
+    <div class="feed-wrapper">
+      <img id="video-feed" src="/video_feed" alt="Live camera feed" class="video-feed" />
+      <div class="feed-overlay">
+        <span class="feed-label">🔴 LIVE</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── METRIC CARDS ── -->
+  <section class="metrics-grid">
+    <!-- EAR -->
+    <div class="metric-card" id="card-ear">
+      <div class="metric-header">
+        <span class="metric-emoji">👁️</span>
+        <span class="metric-name">EAR</span>
+        <span class="metric-hint">Eye Aspect Ratio</span>
+      </div>
+      <div class="metric-value" id="val-ear">—</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar" id="bar-ear"></div>
+      </div>
+      <div class="metric-range"><span>0</span><span>Threshold 0.25</span><span>1</span></div>
+    </div>
+
+    <!-- MAR -->
+    <div class="metric-card" id="card-mar">
+      <div class="metric-header">
+        <span class="metric-emoji">😮</span>
+        <span class="metric-name">MAR</span>
+        <span class="metric-hint">Mouth Aspect Ratio</span>
+      </div>
+      <div class="metric-value" id="val-mar">—</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar" id="bar-mar"></div>
+      </div>
+      <div class="metric-range"><span>0</span><span>Threshold 0.6</span><span>1+</span></div>
+    </div>
+
+    <!-- Pitch -->
+    <div class="metric-card" id="card-pitch">
+      <div class="metric-header">
+        <span class="metric-emoji">⬆️</span>
+        <span class="metric-name">Pitch</span>
+        <span class="metric-hint">Head tilt up/down</span>
+      </div>
+      <div class="metric-value" id="val-pitch">—°</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar centered" id="bar-pitch"></div>
+      </div>
+      <div class="metric-range"><span>-90°</span><span>0°</span><span>90°</span></div>
+    </div>
+
+    <!-- Yaw -->
+    <div class="metric-card" id="card-yaw">
+      <div class="metric-header">
+        <span class="metric-emoji">↔️</span>
+        <span class="metric-name">Yaw</span>
+        <span class="metric-hint">Head turn left/right</span>
+      </div>
+      <div class="metric-value" id="val-yaw">—°</div>
+      <div class="metric-bar-track">
+        <div class="metric-bar centered" id="bar-yaw"></div>
+      </div>
+      <div class="metric-range"><span>-90°</span><span>0°</span><span>90°</span></div>
+    </div>
+
+    <!-- Gaze -->
+    <div class="metric-card wide" id="card-gaze">
+      <div class="metric-header">
+        <span class="metric-emoji">👀</span>
+        <span class="metric-name">Gaze Ratio</span>
+        <span class="metric-hint">Iris horizontal position</span>
+      </div>
+      <div class="metric-value" id="val-gaze">—</div>
+      <div class="metric-bar-track gaze-track">
+        <div class="gaze-zone left">Left</div>
+        <div class="gaze-zone center">Center</div>
+        <div class="gaze-zone right">Right</div>
+        <div class="gaze-indicator" id="gaze-indicator"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── SESSION STATS ── -->
+  <section class="stats-section">
+    <h2 class="section-title">Session Stats</h2>
+    <div class="stats-grid">
+      <div class="stat-card drowsy-stat">
+        <div class="stat-icon">😴</div>
+        <div class="stat-count" id="count-drowsy">0</div>
+        <div class="stat-label">Drowsy</div>
+      </div>
+      <div class="stat-card yawn-stat">
+        <div class="stat-icon">🥱</div>
+        <div class="stat-count" id="count-yawn">0</div>
+        <div class="stat-label">Yawns</div>
+      </div>
+      <div class="stat-card distract-stat">
+        <div class="stat-icon">👀</div>
+        <div class="stat-count" id="count-distract">0</div>
+        <div class="stat-label">Distracted</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── ALERT HISTORY ── -->
+  <section class="history-section">
+    <h2 class="section-title">Alert History</h2>
+    <div class="history-list" id="alert-history">
+      <div class="history-empty">No alerts yet — drive safe! 🚗</div>
+    </div>
+  </section>
++
++  <footer class="footer">
++    Driver Safety System &nbsp;·&nbsp; Real-time Monitoring
++  </footer>
++
++  <script src="/static/app.js"></script>
++</body>
++</html>
++
