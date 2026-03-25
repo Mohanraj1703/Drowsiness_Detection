@@ -1,10 +1,12 @@
+# Alert logs and data
+alerts/
+alerts_log.csv
+instance/
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
-
-# Alert screenshots (auto-generated, not source code)
-alerts/
 
 # Environment & credentials
 .env

@@ -35,11 +35,14 @@ class DriverSafetySystem:
         self.shared_state = shared_state
         self.alert_manager = AlertManager(config)
         self.face_mesh = self._init_mediapipe_model()
+        # Hardware handle
+        self.cap = None
 
-        # Rolling frame counters for sustained-event detection
-        self._drowsy_frames = 0
-        self._yawn_frames = 0
-        self._distract_frames = 0
+        # Time-based sustained event detection (Start timestamps)
+        self._drowsy_start_ts = 0.0
+        self._yawn_start_ts = 0.0
+        self._distracted_start_ts = 0.0
+        self._active_alert = None
         self._alarm_cooldown = 0
 
     # ------------------------------------------------------------------ #
@@ -70,37 +73,81 @@ class DriverSafetySystem:
     # ------------------------------------------------------------------ #
 
     def run_pipeline(self):
-        """Opens the webcam and runs the driver monitoring loop until 'q' is pressed."""
-        logger.info("Engaging Primary Camera Feed...")
-        cap = cv2.VideoCapture(0)
+        """
+        Runs the monitoring pipeline.
+        If shared_state is active, it waits for the 'Start' signal from the web dashboard.
+        Otherwise, it starts the camera immediately (standalone mode).
+        """
+        logger.info("Pipeline initialized. Standby...")
 
-        if not cap.isOpened():
-            logger.error("Camera is unavailable. Check connection and try again.")
-            return
-
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    logger.warning("Failed to read frame. Camera may have disconnected.")
-                    break
-
-                output_frame = self._process_frame(frame)
-
-                # Only show local window if NOT running in web-server mode
-                if self.shared_state is None:
-                    cv2.imshow("Driver Safety System", output_frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
-                        logger.info("Shutdown signal received. Closing system.")
-                        break
+        while True:
+            # If using web dashboard, wait until user clicks 'Start'
+            if self.shared_state:
+                # Reset metrics when stopped
+                if not self.shared_state.system_running:
+                    if self.cap: # Release camera if it was running and system stopped
+                        self.cap.release()
+                        self.cap = None
+                        cv2.destroyAllWindows()
+                        logger.info("Camera feed closed. Entering standby...")
+                    time.sleep(0.5)
+                    continue
+            
+            # Start camera if not already engaged
+            if self.cap is None:
+                if self.shared_state:
+                    self.shared_state.update_status_frame("COMMUNICATING WITH HARDWARE...")
+                
+                logger.info("Engaging Primary Camera Feed...")
+                self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW) # Fast open on Windows
+                
+                # Settle sensors (skip first 10 frames of black/overexposed feed)
+                if self.cap.isOpened():
+                    for _ in range(10): 
+                        self.cap.read()
+                        time.sleep(0.01)
+                    if self.shared_state:
+                        self.shared_state.update_status_frame("CALIBRATING SENSORS...")
                 else:
-                    # In web mode: check for 'q' without blocking
-                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                    logger.error("Failed to connect to primary camera!")
+                    if self.shared_state:
+                        self.shared_state.update_status_frame("HARDWARE ERROR")
+                    self.shared_state.system_running = False
+                    continue # Go back to the start of the while True loop
+
+            try:
+                while True:
+                    # check if stop signal received via web
+                    if self.shared_state and not self.shared_state.system_running:
+                        logger.info("Stop signal received. Disengaging camera.")
                         break
-        finally:
-            cap.release()
-            cv2.destroyAllWindows()
-            self.face_mesh.close()
+
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        logger.warning("Failed to read frame.")
+                        break
+
+                    output_frame = self._process_frame(frame)
+
+                    # Handlers and controls
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        if self.shared_state: self.shared_state.system_running = False
+                        break
+                    
+                    if self.shared_state is None:
+                        cv2.imshow("Driver Safety System", output_frame)
+                    
+                # Outer loop standby
+            finally:
+                if self.cap:
+                    self.cap.release()
+                    self.cap = None
+                    cv2.destroyAllWindows()
+                    logger.info("Camera feed closed. Entering standby...")
+                
+        # Only reached on global shutdown
+        self.face_mesh.close()
 
     # ------------------------------------------------------------------ #
     #  Frame Processing
@@ -108,14 +155,14 @@ class DriverSafetySystem:
 
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
-        Processes a single camera frame:
-          1. Runs MediaPipe face landmark detection
-          2. Extracts eye, mouth, head pose, and gaze metrics
-          3. Draws HUD overlays on frame
-          4. Evaluates alert conditions
+        Processes a single camera frame and ensures feedback is pushed to UI.
         """
         frame = imutils.resize(frame, width=450)
         h, w, _ = frame.shape
+
+        # CRITICAL FIX: Push raw frame to dashboard immediately so the feed isn't black
+        if self.shared_state:
+            self.shared_state.update_frame(frame)
 
         # Run MediaPipe inference
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -159,10 +206,8 @@ class DriverSafetySystem:
         # Evaluate all thresholds and trigger alerts
         self._evaluate_and_alert(frame, ear, mar, pitch, yaw, gaze)
 
-        # Push frame + raw metrics to web dashboard if active
+        # Sync raw telemetry sensor values to shared state
         if self.shared_state:
-            self.shared_state.update_frame(frame)
-            # Write raw sensor values (alert flags updated separately in _evaluate_and_alert)
             with self.shared_state.lock:
                 self.shared_state.ear = ear
                 self.shared_state.mar = mar
@@ -174,38 +219,41 @@ class DriverSafetySystem:
 
     def _evaluate_and_alert(self, frame, ear, mar, pitch, yaw, gaze):
         """
-        Checks live metrics against thresholds using sustained-frame counters.
-        Triggers alert overlays, audio alarm, logging, and notifications.
+        Threshold processing using precise time metrics (5-second requirement).
         """
-        is_drowsy = False
-        is_yawning = False
-        is_distracted = False
+        now = time.time()
 
-        # --- Distraction: Head turned or eyes averted ---
-        if (yaw < -12 or yaw > 12 or pitch < -20
-                or gaze < self.config.gaze_threshold_low
-                or gaze > self.config.gaze_threshold_high):
-            self._distract_frames += 1
-            if self._distract_frames >= self.config.distracted_frame_check:
+        # --- Distraction Analysis ---
+        dist_violated = (yaw < -15 or yaw > 15 or pitch < -25 
+                         or gaze < self.config.gaze_threshold_low 
+                         or gaze > self.config.gaze_threshold_high)
+        is_distracted = False
+        if dist_violated:
+            if self._distracted_start_ts == 0: self._distracted_start_ts = now
+            elif now - self._distracted_start_ts >= self.config.distracted_time_secs:
                 is_distracted = True
         else:
-            self._distract_frames = 0
+            self._distracted_start_ts = 0
 
-        # --- Drowsiness: Eyes closing ---
-        if ear < self.config.ear_threshold:
-            self._drowsy_frames += 1
-            if self._drowsy_frames >= self.config.drowsy_frame_check:
+        # --- Drowsiness Analysis ---
+        ear_violated = (ear < self.config.ear_threshold)
+        is_drowsy = False
+        if ear_violated:
+            if self._drowsy_start_ts == 0: self._drowsy_start_ts = now
+            elif now - self._drowsy_start_ts >= self.config.drowsy_time_secs:
                 is_drowsy = True
         else:
-            self._drowsy_frames = 0
+            self._drowsy_start_ts = 0
 
-        # --- Yawning: Mouth wide open ---
-        if mar > self.config.mar_threshold:
-            self._yawn_frames += 1
-            if self._yawn_frames >= self.config.yawn_frame_check:
+        # --- Yawning Analysis ---
+        yawn_violated = (mar > self.config.mar_threshold)
+        is_yawning = False
+        if yawn_violated:
+            if self._yawn_start_ts == 0: self._yawn_start_ts = now
+            elif now - self._yawn_start_ts >= self.config.yawn_time_secs:
                 is_yawning = True
         else:
-            self._yawn_frames = 0
+            self._yawn_start_ts = 0
 
         # --- Render Alert Banners ---
         if is_drowsy:
@@ -218,19 +266,23 @@ class DriverSafetySystem:
             cv2.putText(frame, "*** DISTRACTED ALERT! ***", (10, 130),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
-        # --- Trigger System Responses ---
+        # --- Trigger System Responses (Edge Triggered) ---
         if is_drowsy or is_yawning or is_distracted:
             self._alarm_cooldown = 20
             reason = "DROWSINESS" if is_drowsy else "YAWNING" if is_yawning else "DISTRACTED"
 
-            self.alert_manager.log_incident(reason, frame)
-            self.alert_manager.dispatch_notification_async(reason)
-            self.alert_manager.speak_alert(reason)
-            self.alert_manager.engage_audio_alarm()
+            # Only trigger once per event
+            if self._active_alert != reason:
+                self._active_alert = reason
+                image_path = self.alert_manager.log_incident(reason, frame)
+                self.alert_manager.dispatch_notification_async(reason)
+                self.alert_manager.speak_alert(reason)
+                self.alert_manager.engage_audio_alarm()
 
-            if self.shared_state:
-                self.shared_state.record_alert(reason)
+                if self.shared_state:
+                    self.shared_state.record_alert(reason, image_path)
         else:
+            self._active_alert = None
             self._alarm_cooldown -= 1
             if self._alarm_cooldown <= 0:
                 self.alert_manager.disengage_audio_alarm()

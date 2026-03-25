@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>System Access • Driver Safety</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --primary: #6366f1;
+      --secondary: #a855f7;
+      --bg-dark: #08090d;
+    }
+    body {
+      background: var(--bg-dark);
+      font-family: 'Outfit', sans-serif;
+      overflow: hidden;
+    }
+    .background-blobs {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      z-index: -1;
+      filter: blur(80px);
+      opacity: 0.4;
+    }
+    .blob {
+      position: absolute;
+      width: 50vw;
+      height: 50vw;
+      border-radius: 50%;
+      animation: move 20s infinite alternate;
+    }
+    .blob-1 { background: var(--primary); top: -10%; left: -10%; animation-delay: 0s; }
+    .blob-2 { background: var(--secondary); bottom: -10%; right: -10%; animation-delay: -5s; }
+    
+    @keyframes move {
+      from { transform: translate(0, 0) scale(1); }
+      to { transform: translate(10%, 10%) scale(1.1); }
+    }
+
+    .glass-card {
+      background: rgba(15, 17, 26, 0.7);
+      backdrop-filter: blur(25px) saturate(180%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 
+        0 25px 50px -12px rgba(0, 0, 0, 0.5),
+        0 0 0 1px rgba(255, 255, 255, 0.05);
+    }
+    
+    .input-field {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .input-field:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15);
+      background: rgba(0, 0, 0, 0.5);
+    }
+
+    .btn-premium {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      position: relative;
+      overflow: hidden;
+      transition: all 0.4s ease;
+    }
+    .btn-premium:hover {
+      box-shadow: 0 0 30px rgba(99, 102, 241, 0.4);
+      transform: translateY(-2px);
+      letter-spacing: 0.05em;
+    }
+    .btn-premium::after {
+      content: '';
+      position: absolute;
+      top: -50%; left: -50%; width: 200%; height: 200%;
+      background: linear-gradient(45deg, transparent, rgba(255,255,255,0.2), transparent);
+      transform: rotate(45deg);
+      transition: 0.6s;
+    }
+    .btn-premium:hover::after {
+      left: 100%;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center p-4">
+  <div class="background-blobs">
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+  </div>
+
+  <div class="w-full max-w-[440px] relative">
+    <!-- Header -->
+    <div class="text-center mb-10 space-y-4">
+      <div class="inline-flex items-center justify-center w-20 h-20 rounded-3xl glass-card mb-2 text-4xl shadow-2xl animate-bounce">
+        🛡️
+      </div>
+      <h1 class="text-4xl font-extrabold text-white tracking-tight">Driver Safety</h1>
+      <p class="text-slate-400 font-medium">Global Monitoring Protocol 7.04</p>
+    </div>
+
+    <!-- Card -->
+    <div class="glass-card rounded-[32px] p-10 relative">
+      <div class="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1/2 px-4 py-1 bg-indigo-500 rounded-full text-[10px] font-bold uppercase tracking-widest text-white shadow-lg">
+        Secure Handshake
+      </div>
+
+      <h2 class="text-xl font-bold text-white mb-2">Initialize Session</h2>
+      <p class="text-slate-500 text-sm mb-8">Enter your security credentials to unlock the dashboard.</p>
+
+      {% with messages = get_flashed_messages() %}
+        {% if messages %}
+          <div class="bg-rose-500/10 border border-rose-500/20 text-rose-500 text-sm px-4 py-3 rounded-2xl mb-6 flex items-center gap-3">
+             <span>⚠️</span> {{ messages[0] }}
+          </div>
+        {% endif %}
+      {% endwith %}
+
+      <form action="/login" method="POST" class="space-y-6">
+        <div class="space-y-2">
+          <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Protocol Identifier</label>
+          <input 
+            type="email" name="email" required placeholder="admin@safety.com"
+            class="input-field w-full rounded-2xl px-5 py-4 text-white placeholder:text-slate-600 outline-none"
+          >
+        </div>
+
+        <div class="space-y-2">
+          <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest ml-1">Access Cipher</label>
+          <input 
+            type="password" name="password" required placeholder="••••••••"
+            class="input-field w-full rounded-2xl px-5 py-4 text-white placeholder:text-slate-600 outline-none"
+          >
+        </div>
+
+        <div class="flex items-center justify-between">
+          <label class="flex items-center gap-2 cursor-pointer group">
+            <input type="checkbox" name="remember" class="w-4 h-4 rounded border-white/10 bg-black text-indigo-500 focus:ring-0">
+            <span class="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">Trust this node</span>
+          </label>
+        </div>
+
+        <button type="submit" class="btn-premium w-full py-4 rounded-2xl text-white font-bold text-sm uppercase tracking-widest mt-4">
+          Establish Connection
+        </button>
+      </form>
+    </div>
+
+    <!-- Footer Info -->
+    <div class="mt-12 text-center">
+      <p class="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em]">
+        Authorized Personnel Only • Node Restricted Access
+      </p>
+      <div class="mt-4 flex justify-center gap-4 text-xs text-slate-600">
+         <span>System Status: <span class="text-emerald-500">Online</span></span>
+         <span>Latency: <span class="text-indigo-400">14ms</span></span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

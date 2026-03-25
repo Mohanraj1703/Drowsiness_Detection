@@ -8,29 +8,25 @@ const METRICS_INTERVAL = 500;   // ms
 const ALERTS_INTERVAL  = 2000;  // ms
 
 // ── DOM refs ──────────────────────────────────────────────
-const $statusBanner  = document.getElementById('status-banner');
-const $statusText    = document.getElementById('status-text');
-const $statusIcon    = document.getElementById('status-icon');
+const $statusPulse   = document.getElementById('status-pulse');
+const $statusLabel   = document.getElementById('status-label');
 const $statusDot     = document.getElementById('status-dot');
 const $sessionTimer  = document.getElementById('session-timer');
 
+const $btnStart      = document.getElementById('btn-start');
+const $btnStop       = document.getElementById('btn-stop');
+const $videoStream   = document.getElementById('video-feed');
+
 const $valEar   = document.getElementById('val-ear');
 const $valMar   = document.getElementById('val-mar');
-const $valPitch = document.getElementById('val-pitch');
-const $valYaw   = document.getElementById('val-yaw');
 const $valGaze  = document.getElementById('val-gaze');
 
 const $barEar   = document.getElementById('bar-ear');
 const $barMar   = document.getElementById('bar-mar');
-const $barPitch = document.getElementById('bar-pitch');
-const $barYaw   = document.getElementById('bar-yaw');
-
 const $gazeIndicator = document.getElementById('gaze-indicator');
 
 const $cardEar   = document.getElementById('card-ear');
 const $cardMar   = document.getElementById('card-mar');
-const $cardPitch = document.getElementById('card-pitch');
-const $cardYaw   = document.getElementById('card-yaw');
 const $cardGaze  = document.getElementById('card-gaze');
 
 const $countDrowsy   = document.getElementById('count-drowsy');
@@ -49,10 +45,51 @@ function formatSeconds(secs) {
   return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
 }
 
-function setAlert(el, active) {
-  if (active) el.classList.add('alert');
-  else        el.classList.remove('alert');
+// ── System Controls ───────────────────────────────────────
+
+async function toggleSystem(action) {
+  try {
+    const res = await fetch('/api/system/toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json();
+    if (data.status === 'success') {
+      updateSystemUI(data.system_running);
+      
+      // Force stream refresh if starting
+      if (action === 'start') {
+        $statusLabel.textContent = 'Hardware Initializing...';
+        $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-amber-500 animate-pulse';
+        $videoStream.src = '/video_feed?t=' + Date.now();
+      } else {
+        $videoStream.src = ''; 
+      }
+    }
+  } catch (err) {
+    console.error("Failed to toggle system", err);
+  }
 }
+
+function updateSystemUI(isRunning) {
+  if (isRunning) {
+    $btnStart.classList.add('hidden');
+    $btnStop.classList.remove('hidden');
+    $statusLabel.textContent = 'System Active • Monitoring Live';
+    $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-emerald-400';
+    $statusPulse.className = 'w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.8)] animate-pulse';
+  } else {
+    $btnStart.classList.remove('hidden');
+    $btnStop.classList.add('hidden');
+    $statusLabel.textContent = 'System Ready • Standby';
+    $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-slate-500';
+    $statusPulse.className = 'w-3 h-3 rounded-full bg-slate-700 shadow-none';
+  }
+}
+
+$btnStart.onclick = () => toggleSystem('start');
+$btnStop.onclick  = () => toggleSystem('stop');
 
 // ── Metrics Polling ───────────────────────────────────────
 
@@ -66,71 +103,38 @@ async function fetchMetrics() {
 }
 
 function updateMetrics(d) {
-  // Session timer
+  updateSystemUI(d.system_running);
   $sessionTimer.textContent = formatSeconds(d.session_seconds);
 
-  // EAR — danger if below 0.25, normalise 0→0.5 as 0→100%
-  const earPct  = clamp(d.ear / 0.5 * 100, 0, 100);
-  const earAlert = d.is_drowsy;
+  if (!d.system_running) {
+    [$valEar, $valMar, $valGaze].forEach(el => el.textContent = '—');
+    [$barEar, $barMar].forEach(el => el.style.width = '0%');
+    return;
+  }
+
+  // EAR
+  const earPct = clamp(d.ear / 0.5 * 100, 0, 100);
   $valEar.textContent = d.ear.toFixed(3);
   $barEar.style.width = earPct + '%';
-  setAlert($valEar, earAlert);
-  setAlert($barEar, earAlert);
-  setAlert($cardEar, earAlert);
+  $cardEar.classList.toggle('border-rose-500/50', d.is_drowsy);
+  $cardEar.classList.toggle('bg-rose-500/10', d.is_drowsy);
 
-  // MAR — danger if above 0.6, normalise 0→1 as 0→100%
-  const marPct   = clamp(d.mar * 100, 0, 100);
-  const marAlert = d.is_yawning;
+  // MAR
+  const marPct = clamp(d.mar * 100, 0, 100);
   $valMar.textContent = d.mar.toFixed(3);
   $barMar.style.width = marPct + '%';
-  setAlert($valMar, marAlert);
-  setAlert($barMar, marAlert);
-  setAlert($cardMar, marAlert);
+  $cardMar.classList.toggle('border-amber-500/50', d.is_yawning);
 
-  // Pitch — range -90..90, centre at 50%
-  const pitchPct   = clamp((d.pitch + 90) / 180 * 100, 0, 100);
-  const pitchAlert = d.is_distracted && (d.pitch < -20);
-  $valPitch.textContent = d.pitch.toFixed(1) + '°';
-  $barPitch.style.width = Math.abs(d.pitch) / 90 * 50 + '%';
-  $barPitch.style.marginLeft = d.pitch < 0 ? (50 - Math.abs(d.pitch) / 90 * 50) + '%' : '50%';
-  setAlert($valPitch, pitchAlert);
-  setAlert($cardPitch, pitchAlert);
-
-  // Yaw — range -90..90
-  const yawAlert = d.is_distracted && (Math.abs(d.yaw) > 12);
-  $valYaw.textContent = d.yaw.toFixed(1) + '°';
-  $barYaw.style.width = Math.abs(d.yaw) / 90 * 50 + '%';
-  $barYaw.style.marginLeft = d.yaw < 0 ? (50 - Math.abs(d.yaw) / 90 * 50) + '%' : '50%';
-  setAlert($valYaw, yawAlert);
-  setAlert($cardYaw, yawAlert);
-
-  // Gaze — 0..1, indicator moves L→R across the track
-  const gazeAlert = d.is_distracted && (d.gaze < 0.42 || d.gaze > 0.58);
-  $valGaze.textContent = d.gaze.toFixed(3);
-  $gazeIndicator.style.left = clamp(d.gaze * 100, 2, 98) + '%';
-  setAlert($gazeIndicator, gazeAlert);
-  setAlert($cardGaze, gazeAlert);
-
-  // Status banner + dot
-  updateStatus(d.status, d.is_drowsy, d.is_yawning, d.is_distracted);
-}
-
-const STATUS_MAP = {
-  SAFE:       { cls: 'safe',       icon: '✅', text: 'Driver Alert & Safe' },
-  DROWSY:     { cls: 'drowsy',     icon: '😴', text: 'DROWSINESS DETECTED — WAKE UP!' },
-  YAWNING:    { cls: 'yawning',    icon: '🥱', text: 'Yawning Detected — Take a Break' },
-  DISTRACTED: { cls: 'distracted', icon: '👀', text: 'Distraction Detected — Eyes on Road!' },
-};
-
-function updateStatus(status) {
-  const config = STATUS_MAP[status] || STATUS_MAP['SAFE'];
-
-  // Banner
-  $statusBanner.className = 'status-banner ' + config.cls;
-  $statusIcon.textContent = config.icon;
-  $statusText.textContent = config.text;
+  // Gaze
+  $valGaze.textContent = (d.gaze * 100).toFixed(0) + '%';
+  $gazeIndicator.style.left = clamp(d.gaze * 100, 5, 95) + '%';
+  $cardGaze.classList.toggle('border-indigo-500/50', d.is_distracted);
 
   // Nav dot
+  updateNavDot(d.status);
+}
+
+function updateNavDot(status) {
   $statusDot.className = 'status-dot ' + (
     status === 'SAFE' ? 'safe' :
     status === 'DROWSY' ? 'danger' : 'warning'
@@ -151,25 +155,37 @@ async function fetchAlerts() {
 }
 
 function updateAlerts(data) {
-  // Counts
   $countDrowsy.textContent   = data.counts.DROWSINESS || 0;
   $countYawn.textContent     = data.counts.YAWNING    || 0;
   $countDistract.textContent = data.counts.DISTRACTED || 0;
 
-  // History list
   const history = data.history || [];
-  if (history.length === _lastHistoryLength) return;   // nothing new
+  if (history.length === _lastHistoryLength) return;
   _lastHistoryLength = history.length;
 
   if (history.length === 0) {
-    $alertHistory.innerHTML = '<div class="history-empty">No alerts yet — drive safe! 🚗</div>';
+    $alertHistory.innerHTML = `
+      <div class="history-empty text-center py-10">
+        <div class="text-2xl mb-2 opacity-20">🛡️</div>
+        <p class="text-[10px] font-bold text-slate-600 uppercase tracking-widest">No Alerts Detected</p>
+      </div>`;
     return;
   }
 
   $alertHistory.innerHTML = history.map(entry => `
-    <div class="history-item">
-      <span class="history-badge badge-${entry.type}">${entry.type}</span>
-      <span class="history-time">${entry.time}</span>
+    <div class="flex flex-col gap-2 p-3 bg-white/5 rounded-xl border border-white/5 group hover:border-white/10 transition-all">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <span class="w-1.5 h-1.5 rounded-full ${entry.type === 'DROWSINESS' ? 'bg-rose-500' : 'bg-amber-500'}"></span>
+          <span class="text-[11px] font-bold uppercase tracking-wider text-white">${entry.type}</span>
+        </div>
+        <span class="text-[10px] font-medium text-slate-500 tabular-nums">${entry.time}</span>
+      </div>
+      ${entry.image ? `
+        <a href="/alerts/${entry.image}" target="_blank" class="block mt-2 overflow-hidden rounded-xl border border-white/10 group-hover:border-indigo-500/30 transition-all">
+          <img src="/alerts/${entry.image}" loading="lazy" class="w-full h-16 object-cover opacity-80 hover:opacity-100 hover:scale-110 transition-all duration-500" alt="Incident Capture">
+        </a>
+      ` : ''}
     </div>
   `).join('');
 }

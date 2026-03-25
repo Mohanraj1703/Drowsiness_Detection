@@ -123,25 +123,36 @@ class AlertManager:
     def log_incident(self, alert_type: str, frame: np.ndarray):
         """
         Saves a screenshot of the incident and appends a row to the CSV log.
-        Rate-limited to once per second to avoid disk flooding.
+        Returns the relative path to the image for web linking.
         """
         current_time = time.time()
         with self._lock:
-            if current_time - self.last_screenshot_ts < 1.0:
-                return
+            if current_time - self.last_screenshot_ts < 2.0:
+                return None
             self.last_screenshot_ts = current_time
 
         timestamp_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-        img_path = os.path.join(
-            self.config.alerts_dir, alert_type, f"{alert_type}_{timestamp_str}.jpg"
-        )
-        cv2.imwrite(img_path, frame)
+        filename = f"{alert_type}_{timestamp_str}.jpg"
+        rel_path = f"{alert_type}/{filename}"   # e.g. DROWSINESS/DROWSINESS_2026.jpg
+        full_path = os.path.join(self.config.alerts_dir, alert_type, filename)
+        
+        # Burn Timestamp & Alert Type onto the image for permanent record
+        frame_copy = frame.copy()
+        ts_text = f"{time.ctime()} | ALERT: {alert_type}"
+        cv2.putText(frame_copy, ts_text, (10, frame.shape[0] - 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA) # Outline
+        cv2.putText(frame_copy, ts_text, (10, frame.shape[0] - 20), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA) # Text
+        
+        cv2.imwrite(full_path, frame_copy)
 
         try:
             with open(self.config.log_csv, mode='a', newline='') as f:
-                csv.writer(f).writerow([time.ctime(), alert_type, img_path])
-        except PermissionError:
-            logger.warning(f"Unable to write to {self.config.log_csv} — file may be open.")
+                csv.writer(f).writerow([time.ctime(), alert_type, rel_path])
+        except Exception as e:
+            logger.warning(f"Logging failed: {e}")
+            
+        return rel_path
 
     # ------------------------------------------------------------------ #
     #  Remote Notifications
