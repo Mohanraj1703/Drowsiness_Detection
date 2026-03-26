@@ -12,11 +12,11 @@ class MonitorConfig:
 
     # --- Detection Thresholds ---
     ear_threshold: float = 0.25         # Eye Aspect Ratio below this = eyes closed
-    mar_threshold: float = 0.6          # Mouth Aspect Ratio above this = yawning
+    mar_threshold: float = 0.45         # Mouth Aspect Ratio above this = yawning
     
-    # User Required: Trigger alarm only after 5 seconds of sustained state
-    drowsy_time_secs: float = 5.0
-    yawn_time_secs: float = 5.0
+    # User Required: Trigger alarm only after X seconds of sustained state
+    drowsy_time_secs: float = 3.0
+    yawn_time_secs: float = 2.5
     distracted_time_secs: float = 5.0
     
     gaze_threshold_low: float = 0.42    # Iris ratio below this = looking left

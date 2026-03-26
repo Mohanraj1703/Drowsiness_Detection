@@ -198,6 +198,15 @@ import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
         $placeholder.classList.remove('hidden');
         $btnStart.classList.remove('hidden');
         $btnStop.classList.add('hidden');
+        
+        // Reset meters so it's clear system is off
+        if ($valEar) $valEar.textContent = "—";
+        if ($valMar) $valMar.textContent = "—";
+        if ($valGaze) $valGaze.textContent = "—";
+        if ($barEar) $barEar.style.width = '0%';
+        if ($barMar) $barMar.style.width = '0%';
+        if ($statusLabel) $statusLabel.textContent = 'SYSTEM READY • STANDBY';
+        
         fetch('/api/system/toggle', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'stop'})});
     };
 
@@ -212,6 +221,7 @@ import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@m
                         <span class="text-[10px] font-black uppercase text-white">${e.type}</span>
                         <span class="text-[10px] text-slate-500">${e.time}</span>
                     </div>
+                    ${e.image ? `<img src="/${e.image}" class="w-full rounded mt-1 border border-white/10 shadow-lg object-cover">` : ''}
                 </div>
             `).join('');
         }
