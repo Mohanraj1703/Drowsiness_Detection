@@ -5,30 +5,49 @@
  * Calculates EAR/MAR in browser and POSTs to server.
  */
 
-(async () => {
-    // ── MediaPipe Core ──
-    const vision = await window.FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-    );
-    
-    const faceLandmarker = await window.FaceLandmarker.createFromOptions(vision, {
-        baseOptions: {
-            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
-            delegate: "GPU"
-        },
-        outputFaceBlendshapes: true,
-        runningMode: "VIDEO",
-        numFaces: 1
-    });
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
 
+(async () => {
     // ── DOM Elements ──
     const $btnStart      = document.getElementById('btn-start');
     const $btnStop       = document.getElementById('btn-stop');
     const $videoFeed     = document.getElementById('webcam');
     const $canvas        = document.getElementById('output-canvas');
     const $placeholder   = document.getElementById('feed-placeholder');
-    const $statusLabel   = document.querySelector('.status-banner span');
-    const $statusDot     = document.querySelector('.status-dot');
+    const $statusLabel   = document.getElementById('status-label');
+    const $statusDot     = document.getElementById('status-pulse');
+
+    $btnStart.disabled = true;
+    $btnStart.textContent = "LOADING AI MODULE...";
+    $btnStart.style.opacity = "0.5";
+    $btnStart.style.cursor = "not-allowed";
+
+    // ── MediaPipe Core ──
+    let faceLandmarker;
+    try {
+        const vision = await FilesetResolver.forVisionTasks(
+            "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+        );
+        
+        faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+                delegate: "GPU"
+            },
+            outputFaceBlendshapes: true,
+            runningMode: "VIDEO",
+            numFaces: 1
+        });
+        
+        $btnStart.disabled = false;
+        $btnStart.textContent = "ENGAGE MONITOR";
+        $btnStart.style.opacity = "1";
+        $btnStart.style.cursor = "pointer";
+    } catch (e) {
+        console.error("Failed to load FaceLandmarker:", e);
+        $btnStart.textContent = "LOAD FAILED. REFRESH.";
+        return;
+    }
     
     const $valEar = document.getElementById('val-ear');
     const $valMar = document.getElementById('val-mar');
