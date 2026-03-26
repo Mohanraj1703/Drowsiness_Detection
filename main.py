@@ -49,8 +49,8 @@ def main():
     config = MonitorConfig()
     shared_state = SharedState()
 
-    # Start Flask web dashboard in a background thread
-    start_server(shared_state, host="0.0.0.0", port=5000)
+    # Start Flask web dashboard with safety config
+    start_server(shared_state, config, host="0.0.0.0", port=5000)
     local_ip = get_local_ip()
     print("\n" + "=" * 50)
     print("  📱 Dashboard ready!")

@@ -9,6 +9,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
+  <!-- MediaPipe AI Engine Core -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/vision_bundle.js" crossorigin="anonymous"></script>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body>
@@ -55,11 +57,21 @@
     <div class="lg:col-span-8 space-y-6">
       <!-- LIVE FEED -->
       <section class="feed-section">
-        <div class="feed-wrapper glass-panel rounded-[32px]">
-          <img id="video-feed" src="/video_feed" alt="Live Stream" class="video-feed w-full" />
+        <div class="feed-wrapper glass-panel rounded-[32px] relative overflow-hidden bg-black aspect-video">
+          <!-- Web-Native Camera Feed -->
+          <video id="webcam" autoplay playsinline class="w-full h-full object-cover opacity-0 transition-opacity duration-1000"></video>
+          <canvas id="output-canvas" class="absolute top-0 left-0 w-full h-full pointer-events-none"></canvas>
+          
+          <div id="feed-placeholder" class="absolute inset-0 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm">
+            <div class="text-center">
+              <div class="text-4xl mb-4 animate-pulse">📡</div>
+              <div id="feed-status-text" class="text-[10px] font-black uppercase tracking-[0.3em] text-indigo-400">System Standby</div>
+            </div>
+          </div>
+
           <div class="feed-overlay">
             <span class="feed-label">🛰️ LIVE FEED</span>
-            <span class="px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold border border-white/10 uppercase tracking-tighter">HD • 30FPS</span>
+            <span class="px-3 py-1 rounded-full bg-black/60 backdrop-blur-md text-[10px] font-bold border border-white/10 uppercase tracking-tighter">WebRTC • 30FPS</span>
           </div>
         </div>
       </section>

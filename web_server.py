@@ -55,6 +55,13 @@ class SharedState:
 
     # Session info
     session_start: float = field(default_factory=time.time)
+    
+    # Web-Session Timing (for public deployment)
+    _drowsy_start_ts: float = 0.0
+    _yawn_start_ts: float = 0.0
+    _distracted_start_ts: float = 0.0
+    _active_alert_type: Optional[str] = None
+
     alert_counts: dict = field(default_factory=lambda: {
         "DROWSINESS": 0,
         "YAWNING": 0,
@@ -102,6 +109,30 @@ class SharedState:
             if len(self.alert_history) > 50:
                 self.alert_history.pop()
 
+    def process_web_metrics(self, ear, mar, config):
+        """Web-specific threshold logic (5-second sustained state)."""
+        now = time.time()
+        
+        # Drowsiness
+        if ear < config.ear_threshold:
+            if self._drowsy_start_ts == 0: self._drowsy_start_ts = now
+            elif now - self._drowsy_start_ts >= config.drowsy_time_secs:
+                self.is_drowsy = True
+                self.record_alert("DROWSINESS")
+        else:
+            self._drowsy_start_ts = 0
+            self.is_drowsy = False
+
+        # Yawning
+        if mar > config.mar_threshold:
+            if self._yawn_start_ts == 0: self._yawn_start_ts = now
+            elif now - self._yawn_start_ts >= config.yawn_time_secs:
+                self.is_yawning = True
+                self.record_alert("YAWNING")
+        else:
+            self._yawn_start_ts = 0
+            self.is_yawning = False
+
     def get_metrics_snapshot(self) -> dict:
         with self.lock:
             elapsed = int(time.time() - self.session_start)
@@ -138,11 +169,12 @@ class SharedState:
 #  Flask Application Factory
 # ------------------------------------------------------------------ #
 
-def create_app(shared_state: SharedState) -> Flask:
+def create_app(shared_state: SharedState, ds_config: "MonitorConfig") -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
     app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'driver-safety-system-secret-12345')
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['DS_CONFIG'] = ds_config
 
     db.init_app(app)
     login_manager = LoginManager()
@@ -237,6 +269,30 @@ def create_app(shared_state: SharedState) -> Flask:
     def api_metrics():
         return jsonify(shared_state.get_metrics_snapshot())
 
+    @app.route("/api/metrics/report", methods=['POST'])
+    @login_required
+    def api_report():
+        """Receives metrics from browser and runs server-side safety analysis."""
+        data = request.json
+        ear = data.get('ear', 0.5)
+        mar = data.get('mar', 0.0)
+        
+        shared_state.process_web_metrics(ear, mar, app.config['DS_CONFIG'])
+            
+        # Return sync data
+        status = "SAFE"
+        if shared_state.is_drowsy: status = "DROWSY"
+        elif shared_state.is_yawning: status = "YAWNING"
+        
+        elapsed = int(time.time() - shared_state.session_start)
+        return jsonify({
+            "status": status,
+            "session": {
+                "timer": f"{elapsed//60:02d}:{elapsed%60:02d}",
+                "counts": dict(shared_state.alert_counts)
+            }
+        })
+
     @app.route("/api/system/toggle", methods=['POST'])
     @login_required
     def toggle_system():
@@ -270,13 +326,19 @@ def create_app(shared_state: SharedState) -> Flask:
     return app
 
 
-def start_server(shared_state: SharedState, host: str = "0.0.0.0", port: int = 5000):
+def start_server(shared_state: SharedState, ds_config: "MonitorConfig", host: str = "0.0.0.0", port: int = 5000):
     """Starts the Flask development server in a daemon thread."""
     import logging
     log = logging.getLogger("werkzeug")
     log.setLevel(logging.ERROR)           # suppress Flask request spam
 
-    app = create_app(shared_state)
+    # Ensure deployment directories exist
+    os.makedirs(os.path.abspath("alerts/DROWSINESS"), exist_ok=True)
+    os.makedirs(os.path.abspath("alerts/YAWNING"), exist_ok=True)
+    os.makedirs(os.path.abspath("alerts/DISTRACTED"), exist_ok=True)
+    os.makedirs(os.path.abspath("instance"), exist_ok=True)
+
+    app = create_app(shared_state, ds_config)
     thread = threading.Thread(
         target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
         daemon=True,

@@ -1,198 +1,155 @@
 /**
- * Driver Safety System — Dashboard JavaScript
- * Polls /api/metrics every 500ms and /api/alerts every 2s
- * Updates all UI elements in real-time.
+ * Driver Safety Dashboard - Web Client
+ * =====================================
+ * Client-side MediaPipe Face Landmarker detection.
+ * Calculates EAR/MAR in browser and POSTs to server.
  */
 
-const METRICS_INTERVAL = 500;   // ms
-const ALERTS_INTERVAL  = 2000;  // ms
-
-// ── DOM refs ──────────────────────────────────────────────
-const $statusPulse   = document.getElementById('status-pulse');
-const $statusLabel   = document.getElementById('status-label');
-const $statusDot     = document.getElementById('status-dot');
-const $sessionTimer  = document.getElementById('session-timer');
-
-const $btnStart      = document.getElementById('btn-start');
-const $btnStop       = document.getElementById('btn-stop');
-const $videoStream   = document.getElementById('video-feed');
-
-const $valEar   = document.getElementById('val-ear');
-const $valMar   = document.getElementById('val-mar');
-const $valGaze  = document.getElementById('val-gaze');
-
-const $barEar   = document.getElementById('bar-ear');
-const $barMar   = document.getElementById('bar-mar');
-const $gazeIndicator = document.getElementById('gaze-indicator');
-
-const $cardEar   = document.getElementById('card-ear');
-const $cardMar   = document.getElementById('card-mar');
-const $cardGaze  = document.getElementById('card-gaze');
-
-const $countDrowsy   = document.getElementById('count-drowsy');
-const $countYawn     = document.getElementById('count-yawn');
-const $countDistract = document.getElementById('count-distract');
-const $alertHistory  = document.getElementById('alert-history');
-
-// ── Helpers ───────────────────────────────────────────────
-
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-
-function formatSeconds(secs) {
-  const h = Math.floor(secs / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  const s = secs % 60;
-  return [h, m, s].map(n => String(n).padStart(2, '0')).join(':');
-}
-
-// ── System Controls ───────────────────────────────────────
-
-async function toggleSystem(action) {
-  try {
-    const res = await fetch('/api/system/toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action })
+(async () => {
+    // ── MediaPipe Core ──
+    const vision = await window.FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
+    );
+    
+    const faceLandmarker = await window.FaceLandmarker.createFromOptions(vision, {
+        baseOptions: {
+            modelAssetPath: `https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
+            delegate: "GPU"
+        },
+        outputFaceBlendshapes: true,
+        runningMode: "VIDEO",
+        numFaces: 1
     });
-    const data = await res.json();
-    if (data.status === 'success') {
-      updateSystemUI(data.system_running);
-      
-      // Force stream refresh if starting
-      if (action === 'start') {
-        $statusLabel.textContent = 'Hardware Initializing...';
-        $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-amber-500 animate-pulse';
-        $videoStream.src = '/video_feed?t=' + Date.now();
-      } else {
-        $videoStream.src = ''; 
-      }
+
+    // ── DOM Elements ──
+    const $btnStart      = document.getElementById('btn-start');
+    const $btnStop       = document.getElementById('btn-stop');
+    const $videoFeed     = document.getElementById('webcam');
+    const $canvas        = document.getElementById('output-canvas');
+    const $placeholder   = document.getElementById('feed-placeholder');
+    const $statusLabel   = document.querySelector('.status-banner span');
+    const $statusDot     = document.querySelector('.status-dot');
+    
+    const $valEar = document.getElementById('val-ear');
+    const $valMar = document.getElementById('val-mar');
+    const $barEar = document.getElementById('bar-ear');
+    const $barMar = document.getElementById('bar-mar');
+    const $cardEar = document.getElementById('card-ear');
+    const $cardMar = document.getElementById('card-mar');
+    
+    const $sessionTimer  = document.getElementById('session-timer');
+    const $cntDrowsy     = document.getElementById('count-drowsy');
+    const $cntYawn       = document.getElementById('count-yawn');
+    const $cntDistract   = document.getElementById('count-distract');
+    const $alertHistory  = document.getElementById('alert-history');
+
+    const canvasCtx = $canvas.getContext('2d');
+    let lastVideoTime = -1;
+
+    // ── Geometry ──
+    const dist = (p1, p2) => Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+    const calculateEar = (pts, ids) => {
+        const p = ids.map(i => pts[i]);
+        return (dist(p[1], p[5]) + dist(p[2], p[4])) / (2 * dist(p[0], p[3]));
+    };
+    const calculateMar = (pts, ids) => dist(pts[ids[0]], pts[ids[1]]) / dist(pts[ids[2]], pts[ids[3]]);
+
+    // ── Detection Loop ──
+    async function predict() {
+        if (!$videoFeed.currentTime || $videoFeed.currentTime === lastVideoTime) {
+            window.requestAnimationFrame(predict);
+            return;
+        }
+        lastVideoTime = $videoFeed.currentTime;
+
+        const results = faceLandmarker.detectForVideo($videoFeed, Date.now());
+        if (results.faceLandmarks && results.faceLandmarks.length > 0) {
+            const pts = results.faceLandmarks[0];
+            const ear = calculateEar(pts, [33, 160, 158, 133, 153, 144]);
+            const mar = calculateMar(pts, [13, 14, 78, 308]);
+
+            // Instant UI Update
+            $valEar.textContent = ear.toFixed(3);
+            $valMar.textContent = mar.toFixed(3);
+            $barEar.style.width = Math.min(ear * 200, 100) + '%';
+            $barMar.style.width = Math.min(mar * 150, 100) + '%';
+            
+            $cardEar.classList.toggle('bg-rose-500/10', ear < 0.22);
+            $cardMar.classList.toggle('bg-amber-500/10', mar > 0.5);
+
+            // POST Telemetry to Server
+            if (Math.floor(Date.now() / 500) % 2 === 0) {
+                syncMetrics(ear, mar);
+            }
+        }
+        window.requestAnimationFrame(predict);
     }
-  } catch (err) {
-    console.error("Failed to toggle system", err);
-  }
-}
 
-function updateSystemUI(isRunning) {
-  if (isRunning) {
-    $btnStart.classList.add('hidden');
-    $btnStop.classList.remove('hidden');
-    $statusLabel.textContent = 'System Active • Monitoring Live';
-    $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-emerald-400';
-    $statusPulse.className = 'w-3 h-3 rounded-full bg-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.8)] animate-pulse';
-  } else {
-    $btnStart.classList.remove('hidden');
-    $btnStop.classList.add('hidden');
-    $statusLabel.textContent = 'System Ready • Standby';
-    $statusLabel.className = 'text-xs font-bold uppercase tracking-widest text-slate-500';
-    $statusPulse.className = 'w-3 h-3 rounded-full bg-slate-700 shadow-none';
-  }
-}
+    async function syncMetrics(ear, mar) {
+        try {
+            const res = await fetch('/api/metrics/report', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ear, mar })
+            });
+            const data = await res.json();
+            
+            // Sync Session Info
+            if (data.session) {
+                $sessionTimer.textContent = data.session.timer;
+                $cntDrowsy.textContent = data.session.counts.DROWSINESS || 0;
+                $cntYawn.textContent = data.session.counts.YAWNING || 0;
+                $cntDistract.textContent = data.session.counts.DISTRACTED || 0;
+            }
 
-$btnStart.onclick = () => toggleSystem('start');
-$btnStop.onclick  = () => toggleSystem('stop');
+            // Sync Nav Status
+            if (data.status !== 'SAFE') {
+                $statusLabel.textContent = `ALERT: ${data.status}`;
+                $statusDot.className = 'status-dot danger';
+            } else {
+                $statusLabel.textContent = 'MONITORING LIVE';
+                $statusDot.className = 'status-dot safe';
+            }
+        } catch (e) {}
+    }
 
-// ── Metrics Polling ───────────────────────────────────────
+    // ── Controls ──
+    $btnStart.onclick = async () => {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        $videoFeed.srcObject = stream;
+        $videoFeed.onloadeddata = () => {
+            $videoFeed.classList.remove('opacity-0');
+            $placeholder.classList.add('hidden');
+            $btnStart.classList.add('hidden');
+            $btnStop.classList.remove('hidden');
+            predict();
+        };
+        fetch('/api/system/toggle', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'start'})});
+    };
 
-async function fetchMetrics() {
-  try {
-    const res  = await fetch('/api/metrics');
-    if (!res.ok) return;
-    const data = await res.json();
-    updateMetrics(data);
-  } catch (_) { /* server restarting — ignore */ }
-}
+    $btnStop.onclick = () => {
+        if ($videoFeed.srcObject) $videoFeed.srcObject.getTracks().forEach(t => t.stop());
+        $videoFeed.classList.add('opacity-0');
+        $placeholder.classList.remove('hidden');
+        $btnStart.classList.remove('hidden');
+        $btnStop.classList.add('hidden');
+        fetch('/api/system/toggle', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({action:'stop'})});
+    };
 
-function updateMetrics(d) {
-  updateSystemUI(d.system_running);
-  $sessionTimer.textContent = formatSeconds(d.session_seconds);
+    // ── Background Polling for Alerts History ──
+    setInterval(async () => {
+        const res = await fetch('/api/alerts');
+        const data = await res.json();
+        if (data.history) {
+            $alertHistory.innerHTML = data.history.map(e => `
+                <div class="flex flex-col gap-2 p-3 bg-white/5 rounded-xl border border-white/5">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-black uppercase text-white">${e.type}</span>
+                        <span class="text-[10px] text-slate-500">${e.time}</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+    }, 3000);
 
-  if (!d.system_running) {
-    [$valEar, $valMar, $valGaze].forEach(el => el.textContent = '—');
-    [$barEar, $barMar].forEach(el => el.style.width = '0%');
-    return;
-  }
-
-  // EAR
-  const earPct = clamp(d.ear / 0.5 * 100, 0, 100);
-  $valEar.textContent = d.ear.toFixed(3);
-  $barEar.style.width = earPct + '%';
-  $cardEar.classList.toggle('border-rose-500/50', d.is_drowsy);
-  $cardEar.classList.toggle('bg-rose-500/10', d.is_drowsy);
-
-  // MAR
-  const marPct = clamp(d.mar * 100, 0, 100);
-  $valMar.textContent = d.mar.toFixed(3);
-  $barMar.style.width = marPct + '%';
-  $cardMar.classList.toggle('border-amber-500/50', d.is_yawning);
-
-  // Gaze
-  $valGaze.textContent = (d.gaze * 100).toFixed(0) + '%';
-  $gazeIndicator.style.left = clamp(d.gaze * 100, 5, 95) + '%';
-  $cardGaze.classList.toggle('border-indigo-500/50', d.is_distracted);
-
-  // Nav dot
-  updateNavDot(d.status);
-}
-
-function updateNavDot(status) {
-  $statusDot.className = 'status-dot ' + (
-    status === 'SAFE' ? 'safe' :
-    status === 'DROWSY' ? 'danger' : 'warning'
-  );
-}
-
-// ── Alerts Polling ────────────────────────────────────────
-
-let _lastHistoryLength = 0;
-
-async function fetchAlerts() {
-  try {
-    const res  = await fetch('/api/alerts');
-    if (!res.ok) return;
-    const data = await res.json();
-    updateAlerts(data);
-  } catch (_) {}
-}
-
-function updateAlerts(data) {
-  $countDrowsy.textContent   = data.counts.DROWSINESS || 0;
-  $countYawn.textContent     = data.counts.YAWNING    || 0;
-  $countDistract.textContent = data.counts.DISTRACTED || 0;
-
-  const history = data.history || [];
-  if (history.length === _lastHistoryLength) return;
-  _lastHistoryLength = history.length;
-
-  if (history.length === 0) {
-    $alertHistory.innerHTML = `
-      <div class="history-empty text-center py-10">
-        <div class="text-2xl mb-2 opacity-20">🛡️</div>
-        <p class="text-[10px] font-bold text-slate-600 uppercase tracking-widest">No Alerts Detected</p>
-      </div>`;
-    return;
-  }
-
-  $alertHistory.innerHTML = history.map(entry => `
-    <div class="flex flex-col gap-2 p-3 bg-white/5 rounded-xl border border-white/5 group hover:border-white/10 transition-all">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <span class="w-1.5 h-1.5 rounded-full ${entry.type === 'DROWSINESS' ? 'bg-rose-500' : 'bg-amber-500'}"></span>
-          <span class="text-[11px] font-bold uppercase tracking-wider text-white">${entry.type}</span>
-        </div>
-        <span class="text-[10px] font-medium text-slate-500 tabular-nums">${entry.time}</span>
-      </div>
-      ${entry.image ? `
-        <a href="/alerts/${entry.image}" target="_blank" class="block mt-2 overflow-hidden rounded-xl border border-white/10 group-hover:border-indigo-500/30 transition-all">
-          <img src="/alerts/${entry.image}" loading="lazy" class="w-full h-16 object-cover opacity-80 hover:opacity-100 hover:scale-110 transition-all duration-500" alt="Incident Capture">
-        </a>
-      ` : ''}
-    </div>
-  `).join('');
-}
-
-// ── Init ──────────────────────────────────────────────────
-
-fetchMetrics();
-fetchAlerts();
-setInterval(fetchMetrics, METRICS_INTERVAL);
-setInterval(fetchAlerts,  ALERTS_INTERVAL);
+})();
