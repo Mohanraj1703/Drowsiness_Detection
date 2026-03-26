@@ -186,6 +186,10 @@ def create_app(shared_state: SharedState, ds_config: "MonitorConfig") -> Flask:
         return User.query.get(int(user_id))
 
     with app.app_context():
+        os.makedirs(app.instance_path, exist_ok=True)
+        os.makedirs(os.path.abspath("alerts/DROWSINESS"), exist_ok=True)
+        os.makedirs(os.path.abspath("alerts/YAWNING"), exist_ok=True)
+        os.makedirs(os.path.abspath("alerts/DISTRACTED"), exist_ok=True)
         db.create_all()
         # Create a default user if none exists
         if not User.query.filter_by(email="admin@safety.com").first():
