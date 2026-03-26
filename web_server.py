@@ -109,16 +109,34 @@ class SharedState:
             if len(self.alert_history) > 50:
                 self.alert_history.pop()
 
-    def process_web_metrics(self, ear, mar, config):
-        """Web-specific threshold logic (5-second sustained state)."""
+    def process_web_metrics(self, ear, mar, gaze, config, snapshot_b64=None):
+        """Web-specific threshold logic (sustained state)."""
         now = time.time()
         
+        with self.lock:
+            self.ear = ear
+            self.mar = mar
+            self.gaze = gaze
+
+        def _save_snap(reason):
+            image_path = None
+            if snapshot_b64 and "," in snapshot_b64:
+                import base64, time as t, os
+                try:
+                    img_data = base64.b64decode(snapshot_b64.split(",")[1])
+                    filename = f"alerts/{reason}/{int(t.time())}.jpg"
+                    with open(filename, "wb") as f: f.write(img_data)
+                    image_path = filename
+                except Exception: pass
+            self.record_alert(reason, image_path)
+
         # Drowsiness
         if ear < config.ear_threshold:
             if self._drowsy_start_ts == 0: self._drowsy_start_ts = now
             elif now - self._drowsy_start_ts >= config.drowsy_time_secs:
-                self.is_drowsy = True
-                self.record_alert("DROWSINESS")
+                if not self.is_drowsy:
+                    self.is_drowsy = True
+                    _save_snap("DROWSINESS")
         else:
             self._drowsy_start_ts = 0
             self.is_drowsy = False
@@ -127,11 +145,23 @@ class SharedState:
         if mar > config.mar_threshold:
             if self._yawn_start_ts == 0: self._yawn_start_ts = now
             elif now - self._yawn_start_ts >= config.yawn_time_secs:
-                self.is_yawning = True
-                self.record_alert("YAWNING")
+                if not self.is_yawning:
+                    self.is_yawning = True
+                    _save_snap("YAWNING")
         else:
             self._yawn_start_ts = 0
             self.is_yawning = False
+
+        # Distraction
+        if gaze < config.gaze_threshold_low or gaze > config.gaze_threshold_high:
+            if self._distracted_start_ts == 0: self._distracted_start_ts = now
+            elif now - self._distracted_start_ts >= config.distracted_time_secs:
+                if not self.is_distracted:
+                    self.is_distracted = True
+                    _save_snap("DISTRACTED")
+        else:
+            self._distracted_start_ts = 0
+            self.is_distracted = False
 
     def get_metrics_snapshot(self) -> dict:
         with self.lock:
@@ -280,8 +310,10 @@ def create_app(shared_state: SharedState, ds_config: "MonitorConfig") -> Flask:
         data = request.json
         ear = data.get('ear', 0.5)
         mar = data.get('mar', 0.0)
+        gaze = data.get('gaze', 0.5)
+        snapshot = data.get('snapshot')
         
-        shared_state.process_web_metrics(ear, mar, app.config['DS_CONFIG'])
+        shared_state.process_web_metrics(ear, mar, gaze, app.config['DS_CONFIG'], snapshot)
             
         # Return sync data
         status = "SAFE"
